@@ -1,0 +1,24 @@
+# 환경변수 (절대 커밋 금지)
+.env
+
+# 로그
+logs/
+
+# Claude 설정
+.claude/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# 가상환경
+venv/
+.venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db

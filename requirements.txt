@@ -1,0 +1,5 @@
+playwright==1.44.0
+python-dotenv==1.0.1
+apscheduler==3.10.4
+loguru==0.7.2
+pytz==2024.1
