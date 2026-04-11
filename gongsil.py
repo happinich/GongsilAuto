@@ -20,6 +20,13 @@ LOGIN_URL = "https://www.gongsil.com/h/member/login.php"
 # bid(단지) 선택이 필요한 매물 유형 코드 (아파트, 오피스텔, 분양권, 재건축/개발)
 NEEDS_BID = {11, 12, 13, 14, 21, 22}
 
+# 자주 실행 대상: 아파트/오피스텔 + 전세/월세/단기
+FREQUENT_CODES  = {11, 21}
+FREQUENT_BTYPES = {"전세", "월세", "단기"}
+
+def _is_frequent(lst: dict) -> bool:
+    return lst["code"] in FREQUENT_CODES and lst["b_type"] in FREQUENT_BTYPES
+
 
 class GongsilManager:
     def __init__(
@@ -89,7 +96,16 @@ class GongsilManager:
             row  = await chk.evaluate('el => el.closest("tr")?.innerText || ""')
             dates = re.findall(r'\d{2}\.\d{2}', row)
             start_date = dates[-1] if dates else "99.99"
-            listings.append({"id": lid, "href": href, "start_date": start_date})
+            # 매물 유형 코드 (href에서 추출)
+            code_match = re.search(r'[?&]code=(\d+)', href or '')
+            code = int(code_match.group(1)) if code_match else 0
+            # 거래 유형 (행 텍스트에서 추출)
+            b_type = "기타"
+            for t in ["매매", "전세", "월세", "단기"]:
+                if t in row:
+                    b_type = t
+                    break
+            listings.append({"id": lid, "href": href, "start_date": start_date, "code": code, "b_type": b_type})
 
         # 직접 최초등록일 기준 오름차순 정렬
         listings.sort(key=lambda x: x["start_date"])
@@ -455,22 +471,35 @@ class GongsilManager:
     # ──────────────────────────────────────────────────────────────────────
     # 메인 진입점
     # ──────────────────────────────────────────────────────────────────────
-    async def refresh_all_listings(self):
+    async def refresh_all_listings(self, group: str = "all"):
+        """
+        group:
+          "all"      - 전체 매물 처리
+          "frequent" - 아파트/오피스텔 전세·월세·단기만
+          "weekly"   - 상가/주택/매매 등 나머지
+        """
         count = self.max_per_run or 1
         listings = await self._load_listings()
-        total    = len(listings)
+
+        if group == "frequent":
+            listings = [l for l in listings if _is_frequent(l)]
+        elif group == "weekly":
+            listings = [l for l in listings if not _is_frequent(l)]
+
+        total = len(listings)
 
         if total == 0:
-            logger.info("광고중인 매물이 없습니다.")
+            logger.info(f"[{group}] 처리할 매물이 없습니다.")
             return
 
         to_process = listings[:count]
-        logger.info(f"전체 {total}개 중 가장 오래된 {len(to_process)}개 재등록 시작")
+        logger.info(f"[{group}] 전체 {total}개 중 가장 오래된 {len(to_process)}개 재등록 시작")
 
         success = 0
         for i, lst in enumerate(to_process):
             logger.info(
-                f"[{i+1}/{len(to_process)}] ID={lst['id']} 최초등록일={lst['start_date']}"
+                f"[{i+1}/{len(to_process)}] ID={lst['id']} "
+                f"코드={lst['code']} 거래={lst['b_type']} 최초등록일={lst['start_date']}"
             )
             ok = await self._relist_one(lst["id"])
             if ok:
@@ -478,4 +507,4 @@ class GongsilManager:
             if i < len(to_process) - 1:
                 await asyncio.sleep(2)
 
-        logger.info(f"완료: {success}/{len(to_process)}개 성공")
+        logger.info(f"[{group}] 완료: {success}/{len(to_process)}개 성공")
