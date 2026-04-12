@@ -54,8 +54,8 @@ def _load_config():
         "frequent_times": [t.strip() for t in os.getenv("FREQUENT_TIMES", "09:00,11:00,13:00,15:00,17:00").split(",")],
         "frequent_max":   int(os.getenv("FREQUENT_MAX", "5")) or None,
         # 주간 실행 (상가/주택/매매 등)
-        "weekly_day":     os.getenv("WEEKLY_DAY", "mon").strip().lower(),
-        "weekly_time":    os.getenv("WEEKLY_TIME", "09:00").strip(),
+        "weekly_days":    [d.strip().lower() for d in os.getenv("WEEKLY_DAYS", "mon,fri").split(",")],
+        "weekly_time":    os.getenv("WEEKLY_TIME", "10:00").strip(),
         "weekly_max":     int(os.getenv("WEEKLY_MAX", "0")) or None,
     }
 
@@ -105,21 +105,22 @@ async def main():
         except ValueError:
             logger.warning(f"잘못된 시간 형식 무시: {t}")
 
-    # ── 주간 실행: 매주 지정 요일 (상가/주택/매매) ──
+    # ── 주간 실행: 매주 지정 요일들 (상가/주택/매매) ──
     try:
         wh, wm = map(int, cfg["weekly_time"].split(":"))
-        scheduler.add_job(
-            run_refresh,
-            CronTrigger(day_of_week=cfg["weekly_day"], hour=wh, minute=wm, timezone=KST),
-            args=[cfg, "weekly"],
-            id="weekly",
-            misfire_grace_time=300,
-            replace_existing=True,
-        )
-        logger.info(
-            f"주간 스케줄 등록: 매주 {cfg['weekly_day']} {cfg['weekly_time']} KST "
-            f"[{GROUP_LABEL['weekly']}]"
-        )
+        for day in cfg["weekly_days"]:
+            scheduler.add_job(
+                run_refresh,
+                CronTrigger(day_of_week=day, hour=wh, minute=wm, timezone=KST),
+                args=[cfg, "weekly"],
+                id=f"weekly_{day}",
+                misfire_grace_time=300,
+                replace_existing=True,
+            )
+            logger.info(
+                f"주간 스케줄 등록: 매주 {day} {cfg['weekly_time']} KST "
+                f"[{GROUP_LABEL['weekly']}]"
+            )
     except ValueError:
         logger.warning(f"주간 스케줄 시간 형식 오류: {cfg['weekly_time']}")
 
