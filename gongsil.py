@@ -72,7 +72,7 @@ class GongsilManager:
         await page.fill("#login_id", self.username)
         await page.fill("#login_pw", self.password)
         await page.click("button.gs_btn_submit")
-        await page.wait_for_load_state("networkidle")
+        await page.wait_for_load_state("domcontentloaded", timeout=15000)
         if "login" in page.url:
             raise RuntimeError("로그인 실패")
         logger.info("로그인 성공")
@@ -96,9 +96,8 @@ class GongsilManager:
             row  = await chk.evaluate('el => el.closest("tr")?.innerText || ""')
             dates = re.findall(r'\d{2}\.\d{2}', row)
             start_date = dates[-1] if dates else "99.99"
-            # 매물 유형 코드 (href에서 추출)
-            code_match = re.search(r'[?&]code=(\d+)', href or '')
-            code = int(code_match.group(1)) if code_match else 0
+            # 매물 유형 코드 (ID 앞 2자리: 11=아파트, 21=오피스텔, 31=빌라, 51=상가 등)
+            code = int(lid[:2]) if lid and len(lid) >= 2 and lid[:2].isdigit() else 0
             # 거래 유형 (행 텍스트에서 추출)
             b_type = "기타"
             for t in ["매매", "전세", "월세", "단기"]:
