@@ -8,7 +8,10 @@
   4. 기존 매물 삭제
 """
 import asyncio
+import math
 import re
+from datetime import date
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger
@@ -26,6 +29,28 @@ FREQUENT_BTYPES = {"전세", "월세", "단기"}
 
 def _is_frequent(lst: dict) -> bool:
     return lst["code"] in FREQUENT_CODES and lst["b_type"] in FREQUENT_BTYPES
+
+def get_daily_per_run(total: int, runs_per_day: int = 5) -> int:
+    """오늘 총 매물 수를 기준으로 1회 처리 수를 계산하고 파일에 저장/로드."""
+    today = date.today().isoformat()
+    plan_file = Path("logs/daily_plan.txt")
+    try:
+        if plan_file.exists():
+            lines = plan_file.read_text().strip().split("\n")
+            if len(lines) == 2 and lines[0] == today:
+                per_run = int(lines[1])
+                logger.info(f"오늘 계획 로드: {per_run}개/회 (총 {total}개)")
+                return per_run
+    except Exception:
+        pass
+    per_run = math.ceil(total / runs_per_day)
+    try:
+        plan_file.parent.mkdir(exist_ok=True)
+        plan_file.write_text(f"{today}\n{per_run}")
+    except Exception:
+        pass
+    logger.info(f"오늘 총 {total}개 매물 → {per_run}개/회 × {runs_per_day}회 계획 수립")
+    return per_run
 
 
 class GongsilManager:
@@ -471,13 +496,6 @@ class GongsilManager:
     # 메인 진입점
     # ──────────────────────────────────────────────────────────────────────
     async def refresh_all_listings(self, group: str = "all"):
-        """
-        group:
-          "all"      - 전체 매물 처리
-          "frequent" - 아파트/오피스텔 전세·월세·단기만
-          "weekly"   - 상가/주택/매매 등 나머지
-        """
-        count = self.max_per_run or 1
         listings = await self._load_listings()
 
         if group == "frequent":
@@ -490,6 +508,12 @@ class GongsilManager:
         if total == 0:
             logger.info(f"[{group}] 처리할 매물이 없습니다.")
             return
+
+        # max_per_run=None이면 하루 5회 균등 분배 자동 계산
+        if self.max_per_run is None:
+            count = get_daily_per_run(total)
+        else:
+            count = self.max_per_run
 
         to_process = listings[:count]
         logger.info(f"[{group}] 전체 {total}개 중 가장 오래된 {len(to_process)}개 재등록 시작")
