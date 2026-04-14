@@ -112,11 +112,14 @@ class GongsilManager:
             wait_until="networkidle",
         )
         checkboxes = await page.query_selector_all('input[name="chkbox[]"]')
-        edit_links = await page.query_selector_all('a[href*="write.php"][href*="id="]')
 
         listings = []
-        for chk, link in zip(checkboxes, edit_links):
+        for chk in checkboxes:
             lid  = await chk.get_attribute("value")
+            link = await page.query_selector(f'a[href*="write.php"][href*="id={lid}"]')
+            if not link:
+                logger.debug(f"수정 링크 없음, 건너뜀: ID={lid}")
+                continue
             href = await link.get_attribute("href")
             row  = await chk.evaluate('el => el.closest("tr")?.innerText || ""')
             dates = re.findall(r'\d{2}\.\d{2}', row)
@@ -488,7 +491,8 @@ class GongsilManager:
             del_resp = await del_info.value
             logger.info(f"기존 매물 삭제: ID={old_id} (HTTP {del_resp.status})")
         except Exception as e:
-            logger.warning(f"삭제 응답 수신 실패: {e}")
+            logger.error(f"기존 매물 삭제 실패 - 수동 삭제 필요: ID={old_id}, 오류: {e}")
+            return False
 
         return True
 
