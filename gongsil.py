@@ -88,6 +88,18 @@ class GongsilManager:
             await self._playwright.stop()
 
     # ──────────────────────────────────────────────────────────────────────
+    # 행 텍스트 → 식별자 (가변 부분 제거)
+    # ──────────────────────────────────────────────────────────────────────
+    @staticmethod
+    def _row_sig(row_text: str) -> str:
+        """행 텍스트에서 순번·광고기간·날짜 제거 → 변하지 않는 식별자 반환"""
+        t = re.sub(r'^\s*\d+\s*', '', row_text)   # 선행 순번
+        t = re.sub(r'\d+\s*일\s*전', '', t)        # N일전
+        t = re.sub(r'\d{2}\.\d{2}', '', t)         # MM.DD 날짜
+        t = re.sub(r'광고\s*', '', t)              # 광고
+        return ' '.join(t.split())
+
+    # ──────────────────────────────────────────────────────────────────────
     # 로그인
     # ──────────────────────────────────────────────────────────────────────
     async def _login(self):
@@ -121,7 +133,9 @@ class GongsilManager:
                 logger.debug(f"수정 링크 없음, 건너뜀: ID={lid}")
                 continue
             href = await link.get_attribute("href")
-            row  = await chk.evaluate('el => el.closest("tr")?.innerText || ""')
+            row_el = await chk.evaluate_handle('el => el.closest("tr")')
+            row  = await row_el.evaluate('el => el ? el.innerText : ""')
+            row  = " ".join(row.split())
             dates = re.findall(r'\d{2}\.\d{2}', row)
             start_date = dates[-1] if dates else "99.99"
             # 매물 유형 코드 (ID 앞 2자리: 11=아파트, 21=오피스텔, 31=빌라, 51=상가 등)
@@ -132,7 +146,7 @@ class GongsilManager:
                 if t in row:
                     b_type = t
                     break
-            listings.append({"id": lid, "href": href, "start_date": start_date, "code": code, "b_type": b_type})
+            listings.append({"id": lid, "href": href, "start_date": start_date, "code": code, "b_type": b_type, "row_text": row})
 
         # 직접 최초등록일 기준 오름차순 정렬
         listings.sort(key=lambda x: x["start_date"])
@@ -432,9 +446,59 @@ class GongsilManager:
         logger.debug("폼 입력 완료")
 
     # ──────────────────────────────────────────────────────────────────────
+    # 재등록 후 검증
+    # ──────────────────────────────────────────────────────────────────────
+    async def _verify_relist(self, old_id: str, old_sig: str = None, expected_total: int = None) -> bool:
+        """① 총 매물 수 불변  ② 기존 ID 삭제  ③ 동일 매물 존재 확인"""
+        page = self._page
+        await page.goto(
+            f"{MY_URL}?page_navi=11&page_size=1000&sort_key=start_date",
+            wait_until="networkidle",
+        )
+        checkboxes = await page.query_selector_all('input[name="chkbox[]"]')
+        post_total = len(checkboxes)
+        ok = True
+
+        # ① 총 매물 수
+        if expected_total is not None:
+            if post_total == expected_total:
+                logger.info(f"[검증 ✔] 총 매물 수 유지: {post_total}개")
+            else:
+                logger.error(f"[검증 ✘] 총 매물 수 불일치: 전 {expected_total}개 → 후 {post_total}개")
+                ok = False
+
+        # ② 기존 ID 삭제 확인
+        old_el = await page.query_selector(f'input[name="chkbox[]"][value="{old_id}"]')
+        if old_el:
+            logger.error(f"[검증 ✘] 기존 ID={old_id} 아직 존재 (삭제 실패)")
+            ok = False
+        else:
+            logger.info(f"[검증 ✔] 기존 ID={old_id} 삭제 확인")
+
+        # ③ 동일 매물 확인 (서명 비교)
+        if old_sig:
+            new_id = None
+            for chk in checkboxes:
+                lid = await chk.get_attribute("value")
+                if lid == old_id:
+                    continue
+                row_el = await chk.evaluate_handle('el => el.closest("tr")')
+                row_text = await row_el.evaluate('el => el ? el.innerText : ""')
+                row_text = ' '.join(row_text.split())
+                if GongsilManager._row_sig(row_text) == old_sig:
+                    new_id = lid
+                    break
+            if new_id:
+                logger.info(f"[검증 ✔] 신규 ID={new_id}로 동일 매물 확인")
+            else:
+                logger.warning(f"[검증 △] 동일 매물 서명 불일치 (원본 ID={old_id}) — 수동 확인 필요")
+
+        return ok
+
+    # ──────────────────────────────────────────────────────────────────────
     # 매물 1개 재등록
     # ──────────────────────────────────────────────────────────────────────
-    async def _relist_one(self, old_id: str) -> bool:
+    async def _relist_one(self, old_id: str, old_sig: str = None, expected_total: int = None) -> bool:
         page = self._page
         logger.info(f"재등록 시작 → ID={old_id}")
 
@@ -494,6 +558,9 @@ class GongsilManager:
             logger.error(f"기존 매물 삭제 실패 - 수동 삭제 필요: ID={old_id}, 오류: {e}")
             return False
 
+        # 5. 재등록 검증
+        await self._verify_relist(old_id, old_sig, expected_total)
+
         return True
 
     # ──────────────────────────────────────────────────────────────────────
@@ -520,7 +587,12 @@ class GongsilManager:
             count = self.max_per_run
 
         to_process = listings[:count]
-        logger.info(f"[{group}] 전체 {total}개 중 가장 오래된 {len(to_process)}개 재등록 시작")
+
+        # 실행 전: 처리 대상 목록 기록
+        logger.info(f"[{group}] ▶ 실행 전 총 {total}개 | 이번 처리 {len(to_process)}개:")
+        for i, lst in enumerate(to_process):
+            sig = GongsilManager._row_sig(lst.get("row_text", ""))
+            logger.info(f"  [{i+1}] ID={lst['id']} 거래={lst['b_type']} 등록일={lst['start_date']} | {sig}")
 
         success = 0
         for i, lst in enumerate(to_process):
@@ -528,10 +600,11 @@ class GongsilManager:
                 f"[{i+1}/{len(to_process)}] ID={lst['id']} "
                 f"코드={lst['code']} 거래={lst['b_type']} 최초등록일={lst['start_date']}"
             )
-            ok = await self._relist_one(lst["id"])
+            old_sig = GongsilManager._row_sig(lst["row_text"]) if lst.get("row_text") else None
+            ok = await self._relist_one(lst["id"], old_sig=old_sig, expected_total=total)
             if ok:
                 success += 1
             if i < len(to_process) - 1:
                 await asyncio.sleep(2)
 
-        logger.info(f"[{group}] 완료: {success}/{len(to_process)}개 성공")
+        logger.info(f"[{group}] ◀ 완료: {success}/{len(to_process)}개 성공 (총 매물 수 목표: {total}개)")

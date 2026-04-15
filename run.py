@@ -15,7 +15,7 @@ from pathlib import Path
 import pytz
 from dotenv import load_dotenv
 from loguru import logger
-from gongsil import GongsilManager
+from gongsil import GongsilManager, get_daily_per_run
 
 load_dotenv()
 Path("logs").mkdir(exist_ok=True)
@@ -67,20 +67,25 @@ async def run_refresh(cfg: dict):
             cfg["username"], cfg["password"], cfg["page_id"],
             cfg["headless"], max_per_run=None
         ) as m:
-            # 결과 집계를 위해 refresh_all_listings 결과 캡처
-            from gongsil import get_daily_per_run
             listings = await m._load_listings()
             total_listings = len(listings)
             per_run = get_daily_per_run(total_listings)
             to_process = listings[:per_run]
             total_processed = len(to_process)
 
+            # 실행 전: 처리 대상 목록 출력
+            logger.info(f"▶ 실행 전 총 {total_listings}개 | 이번 처리 {total_processed}개:")
+            for i, lst in enumerate(to_process):
+                sig = GongsilManager._row_sig(lst.get("row_text", ""))
+                logger.info(f"  [{i+1}] ID={lst['id']} 거래={lst['b_type']} 등록일={lst['start_date']} | {sig}")
+
             for i, lst in enumerate(to_process):
                 logger.info(
                     f"[{i+1}/{total_processed}] ID={lst['id']} "
                     f"코드={lst['code']} 거래={lst['b_type']} 최초등록일={lst['start_date']}"
                 )
-                ok = await m._relist_one(lst["id"])
+                old_sig = GongsilManager._row_sig(lst["row_text"]) if lst.get("row_text") else None
+                ok = await m._relist_one(lst["id"], old_sig=old_sig, expected_total=total_listings)
                 if ok:
                     success += 1
                 if i < total_processed - 1:
