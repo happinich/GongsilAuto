@@ -451,10 +451,12 @@ class GongsilManager:
     async def _verify_relist(self, old_id: str, old_sig: str = None, expected_total: int = None) -> bool:
         """① 총 매물 수 불변  ② 기존 ID 삭제  ③ 동일 매물 존재 확인"""
         page = self._page
-        await page.goto(
-            f"{MY_URL}?page_navi=11&page_size=1000&sort_key=start_date",
-            wait_until="networkidle",
-        )
+        listings_url = f"{MY_URL}?page_navi=11&page_size=1000&sort_key=start_date"
+        try:
+            await page.goto(listings_url, wait_until="networkidle")
+        except Exception:
+            await asyncio.sleep(2)
+            await page.goto(listings_url, wait_until="networkidle")
         checkboxes = await page.query_selector_all('input[name="chkbox[]"]')
         post_total = len(checkboxes)
         ok = True
@@ -558,8 +560,12 @@ class GongsilManager:
             logger.error(f"기존 매물 삭제 실패 - 수동 삭제 필요: ID={old_id}, 오류: {e}")
             return False
 
-        # 5. 재등록 검증
-        await self._verify_relist(old_id, old_sig, expected_total)
+        # 5. 재등록 검증 (오류가 발생해도 재등록 자체는 완료된 것으로 처리)
+        try:
+            await asyncio.sleep(1)   # 삭제 후 브라우저 네비게이션 정리 대기
+            await self._verify_relist(old_id, old_sig, expected_total)
+        except Exception as e:
+            logger.warning(f"검증 중 오류 (재등록은 완료): {e}")
 
         return True
 
